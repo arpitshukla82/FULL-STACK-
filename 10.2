@@ -1,0 +1,184 @@
+Backend (Node.js + Express + MongoDB)
+server.js
+
+js
+Copy code
+import express from "express";
+import mongoose from "mongoose";
+import cors from "cors";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+
+const app = express();
+app.use(express.json());
+app.use(cors());
+
+mongoose.connect("mongodb://127.0.0.1:27017/blog_platform");
+
+const userSchema = new mongoose.Schema({
+  username: String,
+  password: String
+});
+
+const postSchema = new mongoose.Schema({
+  title: String,
+  content: String,
+  author: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  comments: [{ type: mongoose.Schema.Types.ObjectId, ref: "Comment" }]
+});
+
+const commentSchema = new mongoose.Schema({
+  text: String,
+  author: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  post: { type: mongoose.Schema.Types.ObjectId, ref: "Post" }
+});
+
+const User = mongoose.model("User", userSchema);
+const Post = mongoose.model("Post", postSchema);
+const Comment = mongoose.model("Comment", commentSchema);
+
+const JWT_SECRET = "secretkey";
+
+app.post("/register", async (req, res) => {
+  const { username, password } = req.body;
+  const hashed = await bcrypt.hash(password, 10);
+  const user = new User({ username, password: hashed });
+  await user.save();
+  res.json({ message: "Registered" });
+});
+
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body;
+  const user = await User.findOne({ username });
+  if (!user) return res.status(400).json({ message: "Invalid credentials" });
+  const valid = await bcrypt.compare(password, user.password);
+  if (!valid) return res.status(400).json({ message: "Invalid credentials" });
+  const token = jwt.sign({ id: user._id }, JWT_SECRET);
+  res.json({ token });
+});
+
+const auth = (req, res, next) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "No token" });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.userId = decoded.id;
+    next();
+  } catch {
+    res.status(403).json({ message: "Invalid token" });
+  }
+};
+
+app.post("/posts", auth, async (req, res) => {
+  const post = new Post({ ...req.body, author: req.userId });
+  await post.save();
+  res.json(post);
+});
+
+app.get("/posts", async (req, res) => {
+  const posts = await Post.find().populate("author", "username").populate({ path: "comments", populate: { path: "author", select: "username" } });
+  res.json(posts);
+});
+
+app.post("/posts/:id/comments", auth, async (req, res) => {
+  const comment = new Comment({ text: req.body.text, author: req.userId, post: req.params.id });
+  await comment.save();
+  await Post.findByIdAndUpdate(req.params.id, { $push: { comments: comment._id } });
+  res.json(comment);
+});
+
+app.listen(5000, () => console.log("Server running on port 5000"));
+Frontend (React)
+App.js
+
+jsx
+Copy code
+import { useState, useEffect } from "react";
+import axios from "axios";
+
+function App() {
+  const [token, setToken] = useState(localStorage.getItem("token"));
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [posts, setPosts] = useState([]);
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [comment, setComment] = useState("");
+
+  const fetchPosts = async () => {
+    const res = await axios.get("http://localhost:5000/posts");
+    setPosts(res.data);
+  };
+
+  const register = async () => {
+    await axios.post("http://localhost:5000/register", { username, password });
+    setUsername("");
+    setPassword("");
+  };
+
+  const login = async () => {
+    const res = await axios.post("http://localhost:5000/login", { username, password });
+    localStorage.setItem("token", res.data.token);
+    setToken(res.data.token);
+  };
+
+  const createPost = async () => {
+    await axios.post("http://localhost:5000/posts", { title, content }, { headers: { Authorization: `Bearer ${token}` } });
+    setTitle("");
+    setContent("");
+    fetchPosts();
+  };
+
+  const addComment = async (postId) => {
+    await axios.post(`http://localhost:5000/posts/${postId}/comments`, { text: comment }, { headers: { Authorization: `Bearer ${token}` } });
+    setComment("");
+    fetchPosts();
+  };
+
+  useEffect(() => {
+    fetchPosts();
+  }, []);
+
+  return (
+    <div style={{ padding: 20 }}>
+      {!token ? (
+        <div>
+          <h2>Register / Login</h2>
+          <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Username" />
+          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" type="password" />
+          <button onClick={register}>Register</button>
+          <button onClick={login}>Login</button>
+        </div>
+      ) : (
+        <div>
+          <h2>Create Post</h2>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" />
+          <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="Content" />
+          <button onClick={createPost}>Post</button>
+        </div>
+      )}
+      <h2>Posts</h2>
+      {posts.map((p) => (
+        <div key={p._id} style={{ border: "1px solid #ccc", margin: "10px 0", padding: 10 }}>
+          <h3>{p.title}</h3>
+          <p>{p.content}</p>
+          <p>By: {p.author?.username}</p>
+          <h4>Comments</h4>
+          {p.comments?.map((c) => (
+            <p key={c._id}>
+              <strong>{c.author?.username}:</strong> {c.text}
+            </p>
+          ))}
+          {token && (
+            <div>
+              <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Add comment" />
+              <button onClick={() => addComment(p._id)}>Add</button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default App;
