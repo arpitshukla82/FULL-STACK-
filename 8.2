@@ -1,0 +1,46 @@
+import express from "express";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+import dotenv from "dotenv";
+
+dotenv.config();
+const app = express();
+app.use(express.json());
+
+const users = [];
+const SECRET_KEY = process.env.JWT_SECRET || "mysecretkey";
+
+app.post("/register", async (req, res) => {
+  const { username, password } = req.body;
+  const hashedPassword = await bcrypt.hash(password, 10);
+  users.push({ username, password: hashedPassword });
+  res.json({ message: "User registered" });
+});
+
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body;
+  const user = users.find(u => u.username === username);
+  if (!user) return res.status(400).json({ message: "Invalid credentials" });
+  const isMatch = await bcrypt.compare(password, user.password);
+  if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
+  const token = jwt.sign({ username }, SECRET_KEY, { expiresIn: "1h" });
+  res.json({ token });
+});
+
+function verifyToken(req, res, next) {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Access denied" });
+  try {
+    const verified = jwt.verify(token, SECRET_KEY);
+    req.user = verified;
+    next();
+  } catch {
+    res.status(400).json({ message: "Invalid token" });
+  }
+}
+
+app.get("/protected", verifyToken, (req, res) => {
+  res.json({ message: `Welcome ${req.user.username}` });
+});
+
+app.listen(5000, () => console.log("Server running on port 5000"));
