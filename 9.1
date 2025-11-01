@@ -1,0 +1,91 @@
+Dockerfile
+
+Dockerfile
+Copy code
+FROM node:18-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npm run build
+FROM nginx:alpine
+COPY --from=build /app/build /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+.dockerignore
+
+nginx
+Copy code
+node_modules
+build
+.git
+.gitignore
+Dockerfile
+README.md
+package.json
+
+json
+Copy code
+{
+  "name": "react-docker-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  }
+}
+public/index.html
+
+html
+Copy code
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>React Docker App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+src/index.js
+
+js
+Copy code
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App";
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+src/App.js
+
+js
+Copy code
+import React from "react";
+
+function App() {
+  return (
+    <div style={{ textAlign: "center", marginTop: "50px" }}>
+      <h1>React App Running in Docker</h1>
+      <p>Production-ready build using multi-stage Dockerfile</p>
+    </div>
+  );
+}
+
+export default App;
+Commands
+
+bash
+Copy code
+docker build -t react-app .
+docker run -p 80:80 react-app
