@@ -1,0 +1,62 @@
+name: CI/CD Pipeline
+on:
+  push:
+    branches: ["main"]
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - run: npm ci
+      - run: npm test
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - run: npm ci
+      - run: npm run build
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./build
+package.json
+
+json
+Copy code
+{
+  "name": "github-actions-demo",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "echo \"Running tests...\" && exit 0",
+    "build": "echo \"Building project...\" && mkdir -p build && touch build/index.html"
+  }
+}
+src/App.test.js
+
+js
+Copy code
+test("Sample test", () => {
+  expect(2 + 2).toBe(4);
+});
+Command
+
+bash
+Copy code
+git add .
+git commit -m "Add CI/CD pipeline"
+git push origin main
+
+
+
+
+
+
