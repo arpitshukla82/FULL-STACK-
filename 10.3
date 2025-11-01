@@ -1,0 +1,181 @@
+import express from "express";
+import mongoose from "mongoose";
+import cors from "cors";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+
+const app = express();
+app.use(express.json());
+app.use(cors());
+
+mongoose.connect("mongodb://127.0.0.1:27017/social_media");
+
+const userSchema = new mongoose.Schema({
+  username: String,
+  password: String,
+  avatar: String
+});
+
+const postSchema = new mongoose.Schema({
+  text: String,
+  image: String,
+  author: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+  createdAt: { type: Date, default: Date.now }
+});
+
+const User = mongoose.model("User", userSchema);
+const Post = mongoose.model("Post", postSchema);
+
+const JWT_SECRET = "jwtsecretkey";
+
+app.post("/register", async (req, res) => {
+  const { username, password } = req.body;
+  const hashed = await bcrypt.hash(password, 10);
+  const user = new User({ username, password: hashed });
+  await user.save();
+  res.json({ message: "Registered" });
+});
+
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body;
+  const user = await User.findOne({ username });
+  if (!user) return res.status(400).json({ message: "Invalid credentials" });
+  const valid = await bcrypt.compare(password, user.password);
+  if (!valid) return res.status(400).json({ message: "Invalid credentials" });
+  const token = jwt.sign({ id: user._id }, JWT_SECRET);
+  res.json({ token });
+});
+
+const auth = (req, res, next) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "No token" });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.userId = decoded.id;
+    next();
+  } catch {
+    res.status(403).json({ message: "Invalid token" });
+  }
+};
+
+app.post("/posts", auth, async (req, res) => {
+  const post = new Post({ ...req.body, author: req.userId });
+  await post.save();
+  res.json(post);
+});
+
+app.get("/posts", async (req, res) => {
+  const posts = await Post.find().populate("author", "username avatar").sort({ createdAt: -1 });
+  res.json(posts);
+});
+
+app.put("/posts/:id/like", auth, async (req, res) => {
+  const post = await Post.findById(req.params.id);
+  if (!post.likes.includes(req.userId)) post.likes.push(req.userId);
+  else post.likes = post.likes.filter((id) => id.toString() !== req.userId);
+  await post.save();
+  res.json(post);
+});
+
+app.listen(5000, () => console.log("Backend running on port 5000"));
+⚛️ Frontend (App.js)
+jsx
+Copy code
+import { useState, useEffect } from "react";
+import axios from "axios";
+
+function App() {
+  const [token, setToken] = useState(localStorage.getItem("token"));
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [text, setText] = useState("");
+  const [posts, setPosts] = useState([]);
+
+  const register = async () => {
+    await axios.post("http://localhost:5000/register", { username, password });
+    setUsername("");
+    setPassword("");
+  };
+
+  const login = async () => {
+    const res = await axios.post("http://localhost:5000/login", { username, password });
+    localStorage.setItem("token", res.data.token);
+    setToken(res.data.token);
+  };
+
+  const createPost = async () => {
+    await axios.post("http://localhost:5000/posts", { text }, { headers: { Authorization: `Bearer ${token}` } });
+    setText("");
+    fetchPosts();
+  };
+
+  const likePost = async (id) => {
+    await axios.put(`http://localhost:5000/posts/${id}/like`, {}, { headers: { Authorization: `Bearer ${token}` } });
+    fetchPosts();
+  };
+
+  const fetchPosts = async () => {
+    const res = await axios.get("http://localhost:5000/posts");
+    setPosts(res.data);
+  };
+
+  useEffect(() => {
+    fetchPosts();
+  }, []);
+
+  return (
+    <div style={{ padding: 20 }}>
+      {!token ? (
+        <div>
+          <h2>Register / Login</h2>
+          <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Username" />
+          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" type="password" />
+          <button onClick={register}>Register</button>
+          <button onClick={login}>Login</button>
+        </div>
+      ) : (
+        <div>
+          <h2>Create Post</h2>
+          <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="What's on your mind?" />
+          <button onClick={createPost}>Post</button>
+        </div>
+      )}
+      <h2>Feed</h2>
+      {posts.map((p) => (
+        <div key={p._id} style={{ border: "1px solid gray", margin: 10, padding: 10 }}>
+          <p><b>{p.author?.username}</b></p>
+          <p>{p.text}</p>
+          <p>{p.likes.length} Likes</p>
+          {token && <button onClick={() => likePost(p._id)}>Like/Unlike</button>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default App;
+🧩 How to Deploy on AWS EC2
+Launch EC2 instances for:
+
+Frontend (React)
+
+Backend (Node.js)
+
+Install dependencies
+
+bash
+Copy code
+sudo apt update
+sudo apt install -y nodejs npm
+npm install
+Run backend
+
+bash
+Copy code
+node server.js
+Build frontend
+
+bash
+Copy code
+npm run build
