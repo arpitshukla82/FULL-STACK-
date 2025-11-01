@@ -1,0 +1,262 @@
+require('dotenv').config();
+module.exports = {
+  port: process.env.PORT || 4000,
+  accessTokenSecret: process.env.ACCESS_TOKEN_SECRET || 'change_this_access_secret',
+  refreshTokenSecret: process.env.REFRESH_TOKEN_SECRET || 'change_this_refresh_secret',
+  accessTokenExpiry: process.env.ACCESS_TOKEN_EXPIRY || '15m',
+  refreshTokenExpiry: process.env.REFRESH_TOKEN_EXPIRY || '7d',
+};
+js
+Copy code
+const bcrypt = require('bcrypt');
+
+class UserStore {
+  constructor() {
+    this.users = new Map();
+    this.nextId = 1;
+  }
+
+  async createUser({ email, password, roles = ['user'] }) {
+    if (this.users.has(email)) throw new Error('User exists');
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+    const user = { id: this.nextId++, email, passwordHash, roles, refreshTokens: new Set() };
+    this.users.set(email, user);
+    return { id: user.id, email: user.email, roles: user.roles };
+  }
+
+  async validateCredentials(email, password) {
+    const user = this.users.get(email);
+    if (!user) return null;
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    return ok ? { id: user.id, email: user.email, roles: user.roles } : null;
+  }
+
+  addRefreshToken(email, token) {
+    const user = this.users.get(email);
+    if (!user) return;
+    user.refreshTokens.add(token);
+  }
+
+  revokeRefreshToken(email, token) {
+    const user = this.users.get(email);
+    if (!user) return;
+    user.refreshTokens.delete(token);
+  }
+
+  revokeAllRefreshTokens(email) {
+    const user = this.users.get(email);
+    if (!user) return;
+    user.refreshTokens.clear();
+  }
+
+  hasRefreshToken(email, token) {
+    const user = this.users.get(email);
+    return user ? user.refreshTokens.has(token) : false;
+  }
+
+  getUserByEmail(email) {
+    const user = this.users.get(email);
+    if (!user) return null;
+    return { id: user.id, email: user.email, roles: user.roles };
+  }
+
+  async seedAdmin() {
+    try {
+      await this.createUser({ email: 'admin@bank.com', password: 'AdminPass123!', roles: ['admin'] });
+    } catch (e) {}
+  }
+}
+
+module.exports = new UserStore();
+js
+Copy code
+const jwt = require('jsonwebtoken');
+const config = require('../config');
+
+function generateAccessToken(payload) {
+  return jwt.sign(payload, config.accessTokenSecret, { expiresIn: config.accessTokenExpiry });
+}
+
+function generateRefreshToken(payload) {
+  return jwt.sign(payload, config.refreshTokenSecret, { expiresIn: config.refreshTokenExpiry });
+}
+
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[0] === 'Bearer' ? authHeader.split(' ')[1] : null;
+  if (!token) return res.status(401).json({ message: 'Access token required' });
+
+  jwt.verify(token, config.accessTokenSecret, (err, user) => {
+    if (err) return res.status(403).json({ message: 'Invalid or expired access token' });
+    req.user = user;
+    next();
+  });
+}
+
+function authorizeRoles(...allowedRoles) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ message: 'Not authenticated' });
+    const roles = req.user.roles || [];
+    const allowed = roles.some(r => allowedRoles.includes(r));
+    if (!allowed) return res.status(403).json({ message: 'Forbidden: insufficient privileges' });
+    next();
+  };
+}
+
+module.exports = {
+  generateAccessToken,
+  generateRefreshToken,
+  authenticateToken,
+  authorizeRoles,
+};
+js
+Copy code
+const express = require('express');
+const router = express.Router();
+const userStore = require('../models/userStore');
+const { generateAccessToken, generateRefreshToken } = require('../middleware/auth');
+const jwt = require('jsonwebtoken');
+const config = require('../config');
+const cookieParser = require('cookie-parser');
+
+router.use(express.json());
+router.use(cookieParser());
+
+router.post('/register', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ message: 'Email and password required' });
+    const user = await userStore.createUser({ email, password });
+    res.status(201).json({ message: 'User created', user });
+  } catch (err) {
+    res.status(400).json({ message: err.message || 'Registration failed' });
+  }
+});
+
+router.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await userStore.validateCredentials(email, password);
+    if (!user) return res.status(401).json({ message: 'Invalid credentials' });
+
+    const payload = { id: user.id, email: user.email, roles: user.roles };
+    const accessToken = generateAccessToken(payload);
+    const refreshToken = generateRefreshToken({ id: user.id, email: user.email });
+
+    userStore.addRefreshToken(user.email, refreshToken);
+
+    res.cookie('jid', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 1000 * 60 * 60 * 24 * 7,
+    });
+
+    res.json({ accessToken, expiresIn: config.accessTokenExpiry });
+  } catch (err) {
+    res.status(500).json({ message: 'Login failed' });
+  }
+});
+
+router.post('/refresh_token', (req, res) => {
+  const token = req.cookies?.jid || req.body?.refreshToken || null;
+  if (!token) return res.status(401).json({ ok: false, accessToken: null });
+
+  jwt.verify(token, config.refreshTokenSecret, (err, payload) => {
+    if (err) return res.status(403).json({ ok: false, accessToken: null });
+
+    const user = userStore.getUserByEmail(payload.email || '');
+    if (!user) return res.status(403).json({ ok: false, accessToken: null });
+
+    if (!userStore.hasRefreshToken(user.email, token)) {
+      return res.status(403).json({ ok: false, accessToken: null });
+    }
+
+    const newAccessToken = generateAccessToken({ id: user.id, email: user.email, roles: user.roles });
+    res.json({ ok: true, accessToken: newAccessToken });
+  });
+});
+
+router.post('/logout', (req, res) => {
+  const token = req.cookies?.jid || req.body?.refreshToken || null;
+  if (token && req.body?.email) {
+    userStore.revokeRefreshToken(req.body.email, token);
+  }
+  res.clearCookie('jid');
+  res.json({ message: 'Logged out' });
+});
+
+module.exports = router;
+js
+Copy code
+const express = require('express');
+const router = express.Router();
+const { authenticateToken, authorizeRoles } = require('../middleware/auth');
+
+router.use(express.json());
+
+router.get('/balance', authenticateToken, (req, res) => {
+  res.json({
+    account: req.user.email,
+    balance: '₹152,430.75',
+  });
+});
+
+router.post('/admin/adjust', authenticateToken, authorizeRoles('admin'), (req, res) => {
+  res.json({ message: 'Admin adjustment completed', performedBy: req.user.email });
+});
+
+module.exports = router;
+js
+Copy code
+const express = require('express');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const cors = require('cors');
+const cookieParser = require('cookie-parser');
+const config = require('./config');
+const authRoutes = require('./routes/authRoutes');
+const bankingRoutes = require('./routes/bankingRoutes');
+const userStore = require('./models/userStore');
+
+const app = express();
+
+app.use(helmet());
+app.use(express.json());
+app.use(cookieParser());
+app.use(cors({
+  origin: true,
+  credentials: true,
+}));
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: { message: 'Too many requests, please try again later.' },
+});
+app.use('/api/auth', authLimiter);
+
+app.use('/api/auth', authRoutes);
+app.use('/api/banking', bankingRoutes);
+
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+(async () => {
+  await userStore.seedAdmin();
+})();
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ message: 'Internal error' });
+});
+
+app.listen(config.port, () => {
+  console.log(`Server running on port ${config.port}`);
+});
+
+
+
+
+
+
