@@ -1,0 +1,122 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+
+const app = express();
+app.use(cors());
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: {
+    origin: 'http://localhost:3000',
+    methods: ['GET', 'POST']
+  }
+});
+
+io.on('connection', socket => {
+  socket.on('join_room', room => {
+    socket.join(room);
+  });
+
+  socket.on('send_message', data => {
+    io.to(data.room).emit('receive_message', data);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('User disconnected');
+  });
+});
+
+server.listen(4000, () => console.log('Server running on port 4000'));
+Run backend:
+
+bash
+Copy code
+npm install express socket.io cors
+node server.js
+2️⃣ Frontend (React + Socket.io Client)
+Install in your React app:
+
+bash
+Copy code
+npm install socket.io-client
+📁 src/App.js
+
+jsx
+Copy code
+import React, { useState, useEffect } from 'react';
+import io from 'socket.io-client';
+
+const socket = io('http://localhost:4000');
+
+function App() {
+  const [room, setRoom] = useState('');
+  const [username, setUsername] = useState('');
+  const [message, setMessage] = useState('');
+  const [messages, setMessages] = useState([]);
+
+  const joinRoom = () => {
+    if (room !== '' && username !== '') {
+      socket.emit('join_room', room);
+    }
+  };
+
+  const sendMessage = () => {
+    if (message !== '' && room !== '') {
+      const messageData = {
+        room,
+        author: username,
+        message,
+        time: new Date(Date.now()).getHours() + ':' + new Date(Date.now()).getMinutes(),
+      };
+      socket.emit('send_message', messageData);
+      setMessages(list => [...list, messageData]);
+      setMessage('');
+    }
+  };
+
+  useEffect(() => {
+    socket.on('receive_message', data => {
+      setMessages(list => [...list, data]);
+    });
+    return () => socket.off('receive_message');
+  }, []);
+
+  return (
+    <div style={{ textAlign: 'center', marginTop: '40px' }}>
+      <h2>Real-Time Chat App</h2>
+      <div>
+        <input
+          type="text"
+          placeholder="Username"
+          onChange={e => setUsername(e.target.value)}
+        />
+        <input
+          type="text"
+          placeholder="Room ID"
+          onChange={e => setRoom(e.target.value)}
+        />
+        <button onClick={joinRoom}>Join Room</button>
+      </div>
+      <div style={{ marginTop: '20px' }}>
+        <input
+          type="text"
+          placeholder="Type your message..."
+          value={message}
+          onChange={e => setMessage(e.target.value)}
+        />
+        <button onClick={sendMessage}>Send</button>
+      </div>
+      <div style={{ marginTop: '30px' }}>
+        {messages.map((msg, i) => (
+          <p key={i}>
+            <strong>{msg.author}</strong>: {msg.message} <em>({msg.time})</em>
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default App;
