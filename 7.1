@@ -1,0 +1,72 @@
+const express = require('express');
+const cors = require('cors');
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+app.get('/api/message', (req, res) => {
+  res.json({ text: 'Hello from Express API!' });
+});
+
+app.post('/api/data', (req, res) => {
+  const { name } = req.body;
+  res.json({ message: `Hello, ${name}!` });
+});
+
+app.listen(4000, () => console.log('Server running on port 4000'));
+Run with:
+
+bash
+Copy code
+node server.js
+2️⃣ Frontend (React) — App.js
+jsx
+Copy code
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+
+function App() {
+  const [message, setMessage] = useState('');
+  const [input, setInput] = useState('');
+  const [response, setResponse] = useState('');
+
+  useEffect(() => {
+    axios.get('http://localhost:4000/api/message')
+      .then(res => setMessage(res.data.text))
+      .catch(err => console.error(err));
+  }, []);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await axios.post('http://localhost:4000/api/data', { name: input });
+      setResponse(res.data.message);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  return (
+    <div style={{ textAlign: 'center', marginTop: '50px' }}>
+      <h1>{message}</h1>
+      <form onSubmit={handleSubmit}>
+        <input
+          type="text"
+          placeholder="Enter your name"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+        />
+        <button type="submit">Send</button>
+      </form>
+      <p>{response}</p>
+    </div>
+  );
+}
+
+export default App;
+Run frontend with:
+
+bash
+Copy code
+npm start
