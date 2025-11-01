@@ -1,0 +1,164 @@
+pgsql
+Copy code
+backend/
+├── server.js
+├── package.json
+└── .env
+package.json
+
+json
+Copy code
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "main": "server.js",
+  "type": "module",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "mongoose": "^7.0.3"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}
+.env
+
+ini
+Copy code
+PORT=5000
+MONGO_URI=mongodb://localhost:27017/fullstackdb
+server.js
+
+js
+Copy code
+import express from "express";
+import mongoose from "mongoose";
+import cors from "cors";
+import dotenv from "dotenv";
+dotenv.config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+mongoose.connect(process.env.MONGO_URI);
+
+const MessageSchema = new mongoose.Schema({ text: String });
+const Message = mongoose.model("Message", MessageSchema);
+
+app.get("/", (req, res) => res.send("Backend running"));
+app.post("/api/message", async (req, res) => {
+  const { text } = req.body;
+  const msg = new Message({ text });
+  await msg.save();
+  res.json(msg);
+});
+app.get("/api/messages", async (req, res) => {
+  const data = await Message.find();
+  res.json(data);
+});
+
+app.listen(process.env.PORT, () => console.log(`Server running on ${process.env.PORT}`));
+Frontend (React)
+Structure
+
+pgsql
+Copy code
+frontend/
+├── package.json
+├── public/
+│   └── index.html
+└── src/
+    ├── index.js
+    └── App.js
+package.json
+
+json
+Copy code
+{
+  "name": "frontend",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "axios": "^1.6.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build"
+  }
+}
+public/index.html
+
+html
+Copy code
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Full Stack App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+src/index.js
+
+js
+Copy code
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App";
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+src/App.js
+
+js
+Copy code
+import React, { useState, useEffect } from "react";
+import axios from "axios";
+
+function App() {
+  const [text, setText] = useState("");
+  const [messages, setMessages] = useState([]);
+
+  const fetchMessages = async () => {
+    const res = await axios.get("http://YOUR_BACKEND_ALB_DNS/api/messages");
+    setMessages(res.data);
+  };
+
+  const sendMessage = async () => {
+    await axios.post("http://YOUR_BACKEND_ALB_DNS/api/message", { text });
+    setText("");
+    fetchMessages();
+  };
+
+  useEffect(() => {
+    fetchMessages();
+  }, []);
+
+  return (
+    <div style={{ textAlign: "center", marginTop: "50px" }}>
+      <h2>Full Stack App</h2>
+      <input
+        type="text"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="Type message"
+      />
+      <button onClick={sendMessage}>Send</button>
+      <ul>
+        {messages.map((m) => (
+          <li key={m._id}>{m.text}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default App;
