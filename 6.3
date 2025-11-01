@@ -1,0 +1,151 @@
+require('dotenv').config();
+module.exports = {
+  mongoUri: process.env.MONGODB_URI || 'mongodb://localhost:27017/money_transfer',
+  port: process.env.PORT || 4000,
+};
+js
+Copy code
+const mongoose = require('mongoose');
+
+const userSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true, index: true },
+  balance: { type: Number, required: true, min: 0, default: 0 },
+}, { timestamps: true });
+
+module.exports = mongoose.model('User', userSchema);
+js
+Copy code
+const mongoose = require('mongoose');
+
+const transferSchema = new mongoose.Schema({
+  idempotencyKey: { type: String, required: true, unique: true, index: true },
+  from: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  to: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  amount: { type: Number, required: true, min: 0.01 },
+  status: { type: String, enum: ['pending', 'insufficient_funds', 'failed', 'reverted', 'completed'], required: true, default: 'pending' },
+  failureReason: { type: String },
+  meta: { type: Object },
+}, { timestamps: true });
+
+module.exports = mongoose.model('Transfer', transferSchema);
+js
+Copy code
+const express = require('express');
+const router = express.Router();
+const User = require('../models/User');
+const Transfer = require('../models/Transfer');
+
+router.use(express.json());
+
+router.post('/', async (req, res) => {
+  const idempotencyKey = req.header('Idempotency-Key') || req.body.idempotencyKey;
+  const { from, to, amount } = req.body;
+
+  if (!idempotencyKey) return res.status(400).json({ message: 'Idempotency-Key header required' });
+  if (!from || !to || !amount || typeof amount !== 'number' || amount <= 0) return res.status(400).json({ message: 'Invalid payload' });
+  if (from === to) return res.status(400).json({ message: 'Sender and recipient must differ' });
+
+  const existing = await Transfer.findOne({ idempotencyKey }).lean();
+  if (existing) {
+    return res.status(200).json({ transfer: existing });
+  }
+
+  let transfer;
+  try {
+    transfer = await Transfer.create({ idempotencyKey, from, to, amount, status: 'pending' });
+  } catch (err) {
+    if (err.code === 11000) {
+      const found = await Transfer.findOne({ idempotencyKey }).lean();
+      return res.status(200).json({ transfer: found });
+    }
+    return res.status(500).json({ message: 'Failed to create transfer record' });
+  }
+
+  let debitedSender;
+  try {
+    debitedSender = await User.findOneAndUpdate(
+      { _id: from, balance: { $gte: amount } },
+      { $inc: { balance: -amount } },
+      { new: true }
+    ).lean();
+    if (!debitedSender) {
+      await Transfer.findByIdAndUpdate(transfer._id, { status: 'insufficient_funds', failureReason: 'insufficient_funds' }, { new: true });
+      return res.status(400).json({ message: 'Insufficient funds' });
+    }
+  } catch (err) {
+    await Transfer.findByIdAndUpdate(transfer._id, { status: 'failed', failureReason: 'debit_error', meta: { error: String(err) } }, { new: true });
+    return res.status(500).json({ message: 'Failed to debit sender' });
+  }
+
+  let creditedRecipient;
+  try {
+    creditedRecipient = await User.findByIdAndUpdate(
+      to,
+      { $inc: { balance: amount } },
+      { new: true }
+    ).lean();
+
+    if (!creditedRecipient) {
+      try {
+        const revert = await User.findByIdAndUpdate(from, { $inc: { balance: amount } }, { new: true }).lean();
+        await Transfer.findByIdAndUpdate(transfer._id, { status: 'reverted', failureReason: 'recipient_not_found', meta: { revertSucceeded: !!revert } }, { new: true });
+        return res.status(500).json({ message: 'Recipient not found, funds reverted where possible' });
+      } catch (revertErr) {
+        await Transfer.findByIdAndUpdate(transfer._id, { status: 'failed', failureReason: 'credit_failed_revert_failed', meta: { revertError: String(revertErr) } }, { new: true });
+        return res.status(500).json({ message: 'Critical: credit failed and revert failed, manual intervention required' });
+      }
+    }
+  } catch (err) {
+    try {
+      const revert = await User.findByIdAndUpdate(from, { $inc: { balance: amount } }, { new: true }).lean();
+      await Transfer.findByIdAndUpdate(transfer._id, { status: 'reverted', failureReason: 'credit_error', meta: { creditError: String(err), revertSucceeded: !!revert } }, { new: true });
+      return res.status(500).json({ message: 'Credit failed, funds reverted where possible' });
+    } catch (revertErr) {
+      await Transfer.findByIdAndUpdate(transfer._id, { status: 'failed', failureReason: 'credit_error_revert_failed', meta: { creditError: String(err), revertError: String(revertErr) } }, { new: true });
+      return res.status(500).json({ message: 'Critical: credit failed and revert failed, manual intervention required' });
+    }
+  }
+
+  const completed = await Transfer.findByIdAndUpdate(transfer._id, { status: 'completed', meta: { senderBalanceAfter: debitedSender.balance, recipientBalanceAfter: creditedRecipient.balance } }, { new: true }).lean();
+
+  return res.status(200).json({ transfer: completed });
+});
+
+module.exports = router;
+js
+Copy code
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const config = require('./config');
+const transferRoutes = require('./routes/transferRoutes');
+const User = require('./models/User');
+
+const app = express();
+app.use(cors({ origin: true }));
+app.use(express.json());
+
+app.use('/api/transfer', transferRoutes);
+
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+(async function start() {
+  await mongoose.connect(config.mongoUri, { useNewUrlParser: true, useUnifiedTopology: true });
+  const count = await User.countDocuments();
+  if (count === 0) {
+    await User.create([{ email: 'alice@example.com', balance: 1000 }, { email: 'bob@example.com', balance: 100 }]);
+  }
+  app.listen(config.port, () => console.log(`Server listening on port ${config.port}`));
+})();
+
+
+
+
+
+
+
+
+
+
+No file chosenNo file chosen
+ChatGPT can make mistakes. Check important info. See Cookie
